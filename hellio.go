@@ -1,5 +1,5 @@
 // Package hellio is the official Go client for the Hellio Messaging API v1:
-// SMS, OTP (SMS / email / voice), voice broadcasts, number lookup (HLR), email
+// SMS, OTP (SMS / voice / WhatsApp / email), voice broadcasts, number lookup (HLR), email
 // verification, and webhooks.
 //
 // Create a client with a Bearer token and call one method per endpoint. Every
@@ -139,9 +139,10 @@ func (c *Client) Campaign(ctx context.Context, id int) (map[string]any, error) {
 
 // ---------------------------------------------------------------- OTP
 
-// OTP sends a one-time passcode. "to" is a phone number (sms/voice) or an email
-// (email). sender (a Sender ID) is required for sms/voice and ignored for email.
-// channel defaults to "sms" when empty. Pass length or expiry as 0 to omit them,
+// OTP sends a one-time passcode. "to" is a phone number (sms/voice/whatsapp) or an
+// email (email). sender (a Sender ID) is required for sms/voice and ignored for
+// whatsapp and email. channel defaults to "sms" when empty (sms/voice/whatsapp/email).
+// Pass length or expiry as 0 to omit them,
 // and purpose or gateway as "" to omit them. POST otp/send.
 func (c *Client) OTP(ctx context.Context, to, sender, channel, purpose string, length, expiry int, gateway string) (map[string]any, error) {
 	if channel == "" {

@@ -17,6 +17,9 @@ const (
 	KindValidation
 	// KindRateLimit maps to HTTP 429.
 	KindRateLimit
+	// KindServiceUnavailable maps to HTTP 503 (a service switched off by an admin,
+	// or the API paused). Transient: retry later.
+	KindServiceUnavailable
 )
 
 // Error is returned for every non-2xx response. It carries the HTTP status code,
@@ -72,6 +75,7 @@ var (
 	ErrInsufficientBalance = &Error{Kind: KindInsufficientBalance}
 	ErrValidation          = &Error{Kind: KindValidation}
 	ErrRateLimit           = &Error{Kind: KindRateLimit}
+	ErrServiceUnavailable  = &Error{Kind: KindServiceUnavailable}
 )
 
 func newError(status int, message string, body map[string]any) *Error {
@@ -85,6 +89,8 @@ func newError(status int, message string, body map[string]any) *Error {
 		kind = KindValidation
 	case 429:
 		kind = KindRateLimit
+	case 503:
+		kind = KindServiceUnavailable
 	}
 	return &Error{Kind: kind, StatusCode: status, Message: message, Body: body}
 }
