@@ -20,6 +20,10 @@ const (
 	// KindServiceUnavailable maps to HTTP 503 (a service switched off by an admin,
 	// or the API paused). Transient: retry later.
 	KindServiceUnavailable
+	// KindConflict maps to HTTP 409 (the request conflicts with server state, e.g. a
+	// USSD extension that is no longer available). The body "error" field carries the
+	// machine-readable reason, such as "extension_unavailable".
+	KindConflict
 )
 
 // Error is returned for every non-2xx response. It carries the HTTP status code,
@@ -76,6 +80,7 @@ var (
 	ErrValidation          = &Error{Kind: KindValidation}
 	ErrRateLimit           = &Error{Kind: KindRateLimit}
 	ErrServiceUnavailable  = &Error{Kind: KindServiceUnavailable}
+	ErrConflict            = &Error{Kind: KindConflict}
 )
 
 func newError(status int, message string, body map[string]any) *Error {
@@ -85,6 +90,8 @@ func newError(status int, message string, body map[string]any) *Error {
 		kind = KindInvalidApiToken
 	case 402:
 		kind = KindInsufficientBalance
+	case 409:
+		kind = KindConflict
 	case 422:
 		kind = KindValidation
 	case 429:

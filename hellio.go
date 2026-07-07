@@ -1,10 +1,11 @@
 // Package hellio is the official Go client for the Hellio Messaging API v1:
 // SMS, OTP (SMS / voice / WhatsApp / email), voice broadcasts, number lookup (HLR), email
-// verification, and webhooks.
+// verification, USSD, and webhooks.
 //
-// Create a client with a Bearer token and call one method per endpoint. Every
-// call returns the decoded JSON response as a map[string]any (payloads live under
-// the "data" key); non-2xx responses return a typed *Error.
+// Create a client with a Bearer token and call one method per endpoint. Most
+// calls return the decoded JSON response as a map[string]any (payloads live under
+// the "data" key); the USSD methods on client.USSD decode into typed structs
+// instead. Non-2xx responses return a typed *Error.
 package hellio
 
 import (
@@ -34,6 +35,10 @@ type Client struct {
 	baseURL       string
 	defaultSender string
 	http          *http.Client
+
+	// USSD groups the USSD endpoints (pricing, apps, extensions, sessions,
+	// simulate). See ussd.go.
+	USSD *USSDService
 }
 
 // Option configures a Client. Pass options to NewClient.
@@ -89,6 +94,7 @@ func NewClient(token string, opts ...Option) *Client {
 		o(c)
 	}
 	c.baseURL = strings.TrimRight(c.baseURL, "/")
+	c.USSD = &USSDService{client: c}
 	return c
 }
 

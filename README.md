@@ -6,8 +6,8 @@
 
 Go client for the [Hellio Messaging](https://helliomessaging.com) API v1:
 **SMS**, **OTP** (SMS / email / voice), **Voice broadcasts**, **Number Lookup (HLR)**,
-**Email Verification**, and **Webhooks**. Standard library only, no third-party
-dependencies.
+**Email Verification**, **USSD**, and **Webhooks**. Standard library only, no
+third-party dependencies.
 
 ## Install
 ```bash
@@ -39,7 +39,8 @@ client := hellio.NewClient("")
 Available options: `WithBaseURL`, `WithTimeout`, `WithDefaultSender`, `WithHTTPClient`.
 
 Every method takes a `context.Context` first and returns `map[string]any` (payloads
-live under the `data` key), except `Verify` which returns a `bool`.
+live under the `data` key), except `Verify` (a `bool`) and the `client.USSD.*`
+methods, which return typed structs. See [USSD](#ussd).
 
 ## Usage
 
@@ -86,6 +87,71 @@ client.Webhooks(ctx)
 client.DeleteWebhook(ctx, 1)
 ```
 
+## USSD
+
+The USSD endpoints are grouped under `client.USSD`. Unlike the other methods,
+they decode the response `data` into typed structs (`*hellio.USSDApp`,
+`*hellio.USSDExtension`, `*hellio.USSDSession`, `*hellio.USSDPricing`, and so on).
+Access requires a token with the `ussd` ability.
+
+A USSD app owns a callback URL. When a subscriber dials your extension, Hellio
+POSTs the session event to that URL (`sessionId`, `msisdn`, `serviceCode`,
+`input`, `sequence`, `mode`), signed with the header
+`X-Hellio-Signature = HMAC-SHA256(rawBody, app.secret)`; your app replies with a
+`{ message, action }` body where `action` is `"continue"` or `"end"`.
+
+```go
+ctx := context.Background()
+
+// Pricing and availability
+price, _ := client.USSD.Pricing(ctx)             // *hellio.USSDPricing
+fmt.Println(price.ShortCode, price.SessionPrices)
+avail, _ := client.USSD.Availability(ctx, "100") // is code 100 rentable?
+if avail.Available {
+    fmt.Println("monthly price:", *avail.MonthlyPrice) // nil when unavailable
+}
+
+// Apps (List / Create / Update / Delete). List is cursor-paginated: pass "" for
+// the first page; nextCursor is "" when there are no more pages.
+apps, nextCursor, _ := client.USSD.Apps(ctx, "")
+app, _ := client.USSD.CreateApp(ctx, hellio.USSDAppInput{
+    Name:        "Bank menu",
+    CallbackURL: "https://your-app.com/ussd",
+})
+fmt.Println(app.ID, app.Secret) // keep Secret to verify X-Hellio-Signature
+
+active := false
+client.USSD.UpdateApp(ctx, app.ID, hellio.USSDAppInput{
+    Name:        "Bank menu",
+    CallbackURL: "https://your-app.com/ussd",
+    Active:      &active, // pause inbound delivery
+})
+client.USSD.DeleteApp(ctx, app.ID)
+
+// Extensions (List / Rent / Release). Pass appID 0 to rent unassigned.
+exts, _, _ := client.USSD.Extensions(ctx, "")
+ext, err := client.USSD.RentExtension(ctx, "100", app.ID)
+if err != nil {
+    switch {
+    case errors.Is(err, hellio.ErrConflict):           // 409 extension_unavailable
+    case errors.Is(err, hellio.ErrInsufficientBalance): // 402 insufficient_balance
+    }
+}
+client.USSD.ReleaseExtension(ctx, ext.ID)
+
+// Sessions (List / Get). Filter by status ("" for all) and paginate with cursor.
+sessions, _, _ := client.USSD.Sessions(ctx, "ended", "")
+session, _ := client.USSD.Session(ctx, sessions[0].ID)
+
+// Simulate a dialog against your callback without a real subscriber.
+res, _ := client.USSD.Simulate(ctx, hellio.USSDSimulateRequest{
+    Msisdn:      "233241234567",
+    ServiceCode: "*713*100#",
+    NewSession:  true,
+})
+fmt.Println(res.Message, res.Action) // action: "continue" or "end"
+```
+
 ### Reading a response
 Responses are plain maps. Reach into `data` with a type assertion:
 ```go
@@ -112,8 +178,10 @@ sentinel:
 |---|---|---|
 | `hellio.ErrInvalidApiToken` | `KindInvalidApiToken` | 401 |
 | `hellio.ErrInsufficientBalance` | `KindInsufficientBalance` | 402 |
+| `hellio.ErrConflict` | `KindConflict` | 409 |
 | `hellio.ErrValidation` | `KindValidation` | 422 |
 | `hellio.ErrRateLimit` | `KindRateLimit` | 429 |
+| `hellio.ErrServiceUnavailable` | `KindServiceUnavailable` | 503 |
 | (base error) | `KindGeneric` | other |
 
 ```go

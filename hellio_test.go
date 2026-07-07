@@ -28,6 +28,9 @@ func newTestClient(t *testing.T, status int, response any, rec *recorded) *Clien
 			rec.path = r.URL.Path
 			rec.query = r.URL.RawQuery
 			raw, _ := io.ReadAll(r.Body)
+			// Reset per request: json.Unmarshal merges into an existing map, so a
+			// reused recorder would otherwise retain keys from an earlier call.
+			rec.body = nil
 			if len(raw) > 0 {
 				_ = json.Unmarshal(raw, &rec.body)
 			}
