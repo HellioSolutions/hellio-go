@@ -75,7 +75,7 @@ func TestUSSDApps(t *testing.T) {
 	var rec recorded
 	c := newTestClient(t, 200, map[string]any{
 		"data": []any{
-			map[string]any{"id": 1, "name": "Bank", "callback_url": "https://x/cb", "secret": "s", "active": true, "created_at": "2026-07-01"},
+			map[string]any{"id": "11111111-1111-1111-1111-111111111111", "name": "Bank", "callback_url": "https://x/cb", "mode": "test", "test_secret": "ussk_test_abc", "live_secret": "ussk_live_xyz", "is_live": false, "active": true, "created_at": "2026-07-01"},
 		},
 		"meta": map[string]any{"next_cursor": "abc"},
 	}, &rec)
@@ -93,8 +93,11 @@ func TestUSSDApps(t *testing.T) {
 	if next != "abc" {
 		t.Errorf("nextCursor = %q, want abc", next)
 	}
-	if len(apps) != 1 || apps[0].ID != 1 || apps[0].Name != "Bank" || !apps[0].Active {
+	if len(apps) != 1 || apps[0].ID != "11111111-1111-1111-1111-111111111111" || apps[0].Name != "Bank" || !apps[0].Active {
 		t.Errorf("apps = %+v", apps)
+	}
+	if apps[0].Mode != "test" || apps[0].TestSecret != "ussk_test_abc" || apps[0].LiveSecret != "ussk_live_xyz" || apps[0].IsLive {
+		t.Errorf("app mode/secrets = %+v", apps[0])
 	}
 }
 
@@ -113,7 +116,7 @@ func TestUSSDAppsCursor(t *testing.T) {
 func TestUSSDCreateApp(t *testing.T) {
 	var rec recorded
 	c := newTestClient(t, 201, map[string]any{"data": map[string]any{
-		"id": 7, "name": "Bank", "callback_url": "https://x/cb", "secret": "shh", "active": true,
+		"id": "7a7b", "name": "Bank", "callback_url": "https://x/cb", "mode": "test", "test_secret": "ussk_test_shh", "live_secret": "ussk_live_shh", "is_live": false, "active": true,
 	}}, &rec)
 
 	active := false // must be ignored on create
@@ -130,21 +133,21 @@ func TestUSSDCreateApp(t *testing.T) {
 	if _, ok := rec.body["active"]; ok {
 		t.Errorf("active should be omitted on create, got %v", rec.body["active"])
 	}
-	if app.ID != 7 || app.Secret != "shh" {
+	if app.ID != "7a7b" || app.Mode != "test" || app.TestSecret != "ussk_test_shh" || app.IsLive {
 		t.Errorf("app = %+v", app)
 	}
 }
 
 func TestUSSDUpdateApp(t *testing.T) {
 	var rec recorded
-	c := newTestClient(t, 200, map[string]any{"data": map[string]any{"id": 7, "name": "Bank2", "active": false}}, &rec)
+	c := newTestClient(t, 200, map[string]any{"data": map[string]any{"id": "7a7b", "name": "Bank2", "active": false}}, &rec)
 
 	active := false
-	app, err := c.USSD.UpdateApp(context.Background(), 7, USSDAppInput{Name: "Bank2", CallbackURL: "https://x/cb", Active: &active})
+	app, err := c.USSD.UpdateApp(context.Background(), "7a7b", USSDAppInput{Name: "Bank2", CallbackURL: "https://x/cb", Active: &active})
 	if err != nil {
 		t.Fatalf("UpdateApp error: %v", err)
 	}
-	if rec.method != http.MethodPut || rec.path != "/ussd/apps/7" {
+	if rec.method != http.MethodPut || rec.path != "/ussd/apps/7a7b" {
 		t.Errorf("request = %s %s", rec.method, rec.path)
 	}
 	if rec.body["active"] != false {
@@ -159,11 +162,78 @@ func TestUSSDDeleteApp(t *testing.T) {
 	var rec recorded
 	c := newTestClient(t, 204, nil, &rec)
 
-	if err := c.USSD.DeleteApp(context.Background(), 7); err != nil {
+	if err := c.USSD.DeleteApp(context.Background(), "7a7b"); err != nil {
 		t.Fatalf("DeleteApp error: %v", err)
 	}
-	if rec.method != http.MethodDelete || rec.path != "/ussd/apps/7" {
+	if rec.method != http.MethodDelete || rec.path != "/ussd/apps/7a7b" {
 		t.Errorf("request = %s %s", rec.method, rec.path)
+	}
+}
+
+func TestUSSDSetMode(t *testing.T) {
+	var rec recorded
+	c := newTestClient(t, 200, map[string]any{"data": map[string]any{
+		"id": "7a7b", "name": "Bank", "mode": "live", "is_live": true, "active": true,
+	}}, &rec)
+
+	app, err := c.USSD.SetMode(context.Background(), "7a7b", "live")
+	if err != nil {
+		t.Fatalf("SetMode error: %v", err)
+	}
+	if rec.method != http.MethodPost || rec.path != "/ussd/apps/7a7b/mode" {
+		t.Errorf("request = %s %s", rec.method, rec.path)
+	}
+	if rec.body["mode"] != "live" {
+		t.Errorf("body = %v", rec.body)
+	}
+	if app.Mode != "live" || !app.IsLive {
+		t.Errorf("app = %+v", app)
+	}
+}
+
+func TestUSSDSetModeExtensionRequired(t *testing.T) {
+	c := newTestClient(t, 402, map[string]any{"error": "extension_required"}, nil)
+
+	_, err := c.USSD.SetMode(context.Background(), "7a7b", "live")
+	if err == nil {
+		t.Fatal("expected error on 402 extension_required")
+	}
+	if !errors.Is(err, ErrExtensionRequired) {
+		t.Errorf("errors.Is(ErrExtensionRequired) = false for %v", err)
+	}
+	if errors.Is(err, ErrInsufficientBalance) {
+		t.Errorf("extension_required must not match ErrInsufficientBalance")
+	}
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("not a *hellio.Error: %v", err)
+	}
+	if e.Kind != KindExtensionRequired || e.StatusCode != 402 {
+		t.Errorf("kind/status = %d/%d", e.Kind, e.StatusCode)
+	}
+	if e.Message != "extension_required" {
+		t.Errorf("message = %q, want extension_required", e.Message)
+	}
+}
+
+func TestUSSDRotateSecret(t *testing.T) {
+	var rec recorded
+	c := newTestClient(t, 200, map[string]any{"data": map[string]any{
+		"id": "7a7b", "mode": "test", "test_secret": "ussk_test_new", "live_secret": "ussk_live_old",
+	}}, &rec)
+
+	app, err := c.USSD.RotateSecret(context.Background(), "7a7b", "test")
+	if err != nil {
+		t.Fatalf("RotateSecret error: %v", err)
+	}
+	if rec.method != http.MethodPost || rec.path != "/ussd/apps/7a7b/rotate-secret" {
+		t.Errorf("request = %s %s", rec.method, rec.path)
+	}
+	if rec.body["mode"] != "test" {
+		t.Errorf("body = %v", rec.body)
+	}
+	if app.TestSecret != "ussk_test_new" {
+		t.Errorf("app = %+v", app)
 	}
 }
 
@@ -171,7 +241,7 @@ func TestUSSDExtensions(t *testing.T) {
 	var rec recorded
 	c := newTestClient(t, 200, map[string]any{
 		"data": []any{
-			map[string]any{"id": 3, "code": "100", "dial_string": "*713*100#", "length": 3, "status": "active", "monthly_price": "50.00", "auto_renew": true, "app_id": 7, "expires_at": "2026-08-01"},
+			map[string]any{"id": "e3", "code": "100", "dial_string": "*713*100#", "length": 3, "status": "active", "monthly_price": "50.00", "auto_renew": true, "app_id": "7a7b", "expires_at": "2026-08-01"},
 		},
 	}, &rec)
 
@@ -185,46 +255,46 @@ func TestUSSDExtensions(t *testing.T) {
 	if next != "" {
 		t.Errorf("nextCursor = %q, want empty", next)
 	}
-	if len(exts) != 1 || exts[0].Code != "100" || exts[0].AppID == nil || *exts[0].AppID != 7 {
+	if len(exts) != 1 || exts[0].Code != "100" || exts[0].AppID == nil || *exts[0].AppID != "7a7b" {
 		t.Errorf("exts = %+v", exts)
 	}
 }
 
 func TestUSSDRentExtension(t *testing.T) {
 	var rec recorded
-	c := newTestClient(t, 201, map[string]any{"data": map[string]any{"id": 9, "code": "100", "status": "active"}}, &rec)
+	c := newTestClient(t, 201, map[string]any{"data": map[string]any{"id": "e9", "code": "100", "status": "active"}}, &rec)
 
-	ext, err := c.USSD.RentExtension(context.Background(), "100", 7)
+	ext, err := c.USSD.RentExtension(context.Background(), "100", "7a7b")
 	if err != nil {
 		t.Fatalf("RentExtension error: %v", err)
 	}
 	if rec.method != http.MethodPost || rec.path != "/ussd/extensions" {
 		t.Errorf("request = %s %s", rec.method, rec.path)
 	}
-	if rec.body["code"] != "100" || rec.body["app_id"] != float64(7) {
+	if rec.body["code"] != "100" || rec.body["app_id"] != "7a7b" {
 		t.Errorf("body = %v", rec.body)
 	}
-	if ext.ID != 9 {
+	if ext.ID != "e9" {
 		t.Errorf("ext = %+v", ext)
 	}
 }
 
 func TestUSSDRentExtensionNoApp(t *testing.T) {
 	var rec recorded
-	c := newTestClient(t, 201, map[string]any{"data": map[string]any{"id": 9}}, &rec)
+	c := newTestClient(t, 201, map[string]any{"data": map[string]any{"id": "e9"}}, &rec)
 
-	if _, err := c.USSD.RentExtension(context.Background(), "100", 0); err != nil {
+	if _, err := c.USSD.RentExtension(context.Background(), "100", ""); err != nil {
 		t.Fatalf("RentExtension error: %v", err)
 	}
 	if _, ok := rec.body["app_id"]; ok {
-		t.Errorf("app_id should be omitted when 0, got %v", rec.body["app_id"])
+		t.Errorf("app_id should be omitted when empty, got %v", rec.body["app_id"])
 	}
 }
 
 func TestUSSDRentExtensionConflict(t *testing.T) {
 	c := newTestClient(t, 409, map[string]any{"error": "extension_unavailable"}, nil)
 
-	_, err := c.USSD.RentExtension(context.Background(), "100", 0)
+	_, err := c.USSD.RentExtension(context.Background(), "100", "")
 	if err == nil {
 		t.Fatal("expected error on 409")
 	}
@@ -244,15 +314,18 @@ func TestUSSDRentExtensionConflict(t *testing.T) {
 }
 
 func TestUSSDRentExtensionInsufficientBalance(t *testing.T) {
-	c := newTestClient(t, 402, map[string]any{"error": "insufficient_balance"}, nil)
+	c := newTestClient(t, 402, map[string]any{"error": "insufficient_ussd_balance"}, nil)
 
-	_, err := c.USSD.RentExtension(context.Background(), "100", 0)
+	_, err := c.USSD.RentExtension(context.Background(), "100", "")
 	if !errors.Is(err, ErrInsufficientBalance) {
 		t.Errorf("errors.Is(ErrInsufficientBalance) = false for %v", err)
 	}
+	if errors.Is(err, ErrExtensionRequired) {
+		t.Errorf("insufficient_ussd_balance must not match ErrExtensionRequired")
+	}
 	var e *Error
-	if errors.As(err, &e) && e.Message != "insufficient_balance" {
-		t.Errorf("message = %q, want insufficient_balance", e.Message)
+	if errors.As(err, &e) && e.Message != "insufficient_ussd_balance" {
+		t.Errorf("message = %q, want insufficient_ussd_balance", e.Message)
 	}
 }
 
@@ -260,10 +333,10 @@ func TestUSSDReleaseExtension(t *testing.T) {
 	var rec recorded
 	c := newTestClient(t, 204, nil, &rec)
 
-	if err := c.USSD.ReleaseExtension(context.Background(), 9); err != nil {
+	if err := c.USSD.ReleaseExtension(context.Background(), "e9"); err != nil {
 		t.Fatalf("ReleaseExtension error: %v", err)
 	}
-	if rec.method != http.MethodDelete || rec.path != "/ussd/extensions/9" {
+	if rec.method != http.MethodDelete || rec.path != "/ussd/extensions/e9" {
 		t.Errorf("request = %s %s", rec.method, rec.path)
 	}
 }
@@ -272,7 +345,7 @@ func TestUSSDSessions(t *testing.T) {
 	var rec recorded
 	c := newTestClient(t, 200, map[string]any{
 		"data": []any{
-			map[string]any{"id": 5, "session_ref": "ref", "msisdn": "233241234567", "service_code": "*713*100#", "status": "ended", "steps": 3, "charge": "0.09", "sandbox": false, "started_at": "a", "ended_at": "b"},
+			map[string]any{"id": "s5", "session_ref": "ref", "msisdn": "233241234567", "service_code": "*713*100#", "status": "ended", "steps": 3, "charge": "0.09", "sandbox": false, "started_at": "a", "ended_at": "b"},
 		},
 		"meta": map[string]any{"next_cursor": "n2"},
 	}, &rec)
@@ -290,7 +363,7 @@ func TestUSSDSessions(t *testing.T) {
 	if next != "n2" {
 		t.Errorf("nextCursor = %q, want n2", next)
 	}
-	if len(sessions) != 1 || sessions[0].ID != 5 || sessions[0].Steps != 3 || sessions[0].Status != "ended" {
+	if len(sessions) != 1 || sessions[0].ID != "s5" || sessions[0].Steps != 3 || sessions[0].Status != "ended" {
 		t.Errorf("sessions = %+v", sessions)
 	}
 }
@@ -309,16 +382,16 @@ func TestUSSDSessionsNoFilters(t *testing.T) {
 
 func TestUSSDSession(t *testing.T) {
 	var rec recorded
-	c := newTestClient(t, 200, map[string]any{"data": map[string]any{"id": 5, "status": "active"}}, &rec)
+	c := newTestClient(t, 200, map[string]any{"data": map[string]any{"id": "s5", "status": "active"}}, &rec)
 
-	sess, err := c.USSD.Session(context.Background(), 5)
+	sess, err := c.USSD.Session(context.Background(), "s5")
 	if err != nil {
 		t.Fatalf("Session error: %v", err)
 	}
-	if rec.method != http.MethodGet || rec.path != "/ussd/sessions/5" {
+	if rec.method != http.MethodGet || rec.path != "/ussd/sessions/s5" {
 		t.Errorf("request = %s %s", rec.method, rec.path)
 	}
-	if sess.ID != 5 || sess.Status != "active" {
+	if sess.ID != "s5" || sess.Status != "active" {
 		t.Errorf("session = %+v", sess)
 	}
 }
@@ -329,8 +402,9 @@ func TestUSSDSimulate(t *testing.T) {
 		"message": "Welcome", "action": "continue", "continue": true,
 	}}, &rec)
 
+	code := "*713*100#"
 	res, err := c.USSD.Simulate(context.Background(), USSDSimulateRequest{
-		Msisdn: "233241234567", ServiceCode: "*713*100#", Input: "", NewSession: true,
+		AppID: "7a7b", Msisdn: "233241234567", ServiceCode: &code, Input: "", NewSession: true,
 	})
 	if err != nil {
 		t.Fatalf("Simulate error: %v", err)
@@ -338,7 +412,7 @@ func TestUSSDSimulate(t *testing.T) {
 	if rec.method != http.MethodPost || rec.path != "/ussd/simulate" {
 		t.Errorf("request = %s %s", rec.method, rec.path)
 	}
-	if rec.body["new_session"] != true || rec.body["service_code"] != "*713*100#" {
+	if rec.body["app_id"] != "7a7b" || rec.body["new_session"] != true || rec.body["service_code"] != "*713*100#" {
 		t.Errorf("body = %v", rec.body)
 	}
 	if _, ok := rec.body["session_id"]; ok {
@@ -346,5 +420,38 @@ func TestUSSDSimulate(t *testing.T) {
 	}
 	if res.Message != "Welcome" || res.Action != "continue" || !res.Continue {
 		t.Errorf("result = %+v", res)
+	}
+}
+
+func TestUSSDSimulateDefaultServiceCode(t *testing.T) {
+	var rec recorded
+	c := newTestClient(t, 200, map[string]any{"data": map[string]any{
+		"message": "Welcome", "action": "continue", "continue": true,
+	}}, &rec)
+
+	// ServiceCode left nil: the server defaults it to the shared short code, so it
+	// must be omitted from the request body.
+	if _, err := c.USSD.Simulate(context.Background(), USSDSimulateRequest{
+		AppID: "7a7b", Msisdn: "233241234567", NewSession: true,
+	}); err != nil {
+		t.Fatalf("Simulate error: %v", err)
+	}
+	if _, ok := rec.body["service_code"]; ok {
+		t.Errorf("service_code should be omitted when nil, got %v", rec.body["service_code"])
+	}
+}
+
+func TestUSSDSimulateUnknownApp(t *testing.T) {
+	c := newTestClient(t, 422, map[string]any{"error": "unknown_app"}, nil)
+
+	_, err := c.USSD.Simulate(context.Background(), USSDSimulateRequest{
+		AppID: "nope", Msisdn: "233241234567", NewSession: true,
+	})
+	if !errors.Is(err, ErrValidation) {
+		t.Errorf("errors.Is(ErrValidation) = false for %v", err)
+	}
+	var e *Error
+	if errors.As(err, &e) && e.Message != "unknown_app" {
+		t.Errorf("message = %q, want unknown_app", e.Message)
 	}
 }

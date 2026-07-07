@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-07
+
+### Added
+- USSD apps now carry test/live modes. `USSDApp` gains `Mode`, `TestSecret`
+  (prefix `ussk_test_`), `LiveSecret` (prefix `ussk_live_`), and `IsLive`; new
+  apps start in `"test"`. New methods `SetMode(ctx, id, mode)` and
+  `RotateSecret(ctx, id, mode)` switch an app between test and live and rotate the
+  signing secret for a mode.
+- `KindExtensionRequired` (402) with the `ErrExtensionRequired` sentinel, returned
+  by `SetMode` when going live before the USSD extension add-on is purchased (body
+  error `extension_required`). Distinguished from `ErrInsufficientBalance` by the
+  body slug even though both are HTTP 402.
+- `Simulate` now targets an app by `app_id`: `USSDSimulateRequest` gains a required
+  `AppID`. An unknown or not-owned app returns `KindValidation` (422, body error
+  `unknown_app`). Simulation always runs in the sandbox (test mode).
+
+### Changed
+- USSD app and extension IDs are now UUID strings. `USSDApp.ID`,
+  `USSDExtension.ID` / `AppID`, and `USSDSession.ID` are `string`; and the id
+  parameters of `UpdateApp`, `DeleteApp`, `RentExtension` (appID), `SetMode`,
+  `RotateSecret`, `ReleaseExtension`, and `Session` are `string`. Pass `appID ""`
+  to `RentExtension` to leave an extension unassigned.
+- `USSDApp` no longer has `Secret`; use `TestSecret` / `LiveSecret` per `Mode`.
+- `USSDSimulateRequest.ServiceCode` is now an optional `*string` (omitted when
+  nil; the server defaults it to the shared short code).
+- Extension rent draws from the dedicated USSD balance; a shortfall now returns
+  `insufficient_ussd_balance` (was `insufficient_balance`), still HTTP 402 /
+  `ErrInsufficientBalance`.
+
 ## [1.1.0] - 2026-07-07
 
 ### Added

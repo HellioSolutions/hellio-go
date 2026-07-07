@@ -24,6 +24,11 @@ const (
 	// USSD extension that is no longer available). The body "error" field carries the
 	// machine-readable reason, such as "extension_unavailable".
 	KindConflict
+	// KindExtensionRequired maps to HTTP 402 with the body "error" slug
+	// "extension_required": switching a USSD app to live mode before the USSD
+	// extension add-on has been purchased. Distinct from KindInsufficientBalance so
+	// callers can tell "buy the add-on" apart from "top up the balance".
+	KindExtensionRequired
 )
 
 // Error is returned for every non-2xx response. It carries the HTTP status code,
@@ -81,6 +86,7 @@ var (
 	ErrRateLimit           = &Error{Kind: KindRateLimit}
 	ErrServiceUnavailable  = &Error{Kind: KindServiceUnavailable}
 	ErrConflict            = &Error{Kind: KindConflict}
+	ErrExtensionRequired   = &Error{Kind: KindExtensionRequired}
 )
 
 func newError(status int, message string, body map[string]any) *Error {
@@ -98,6 +104,12 @@ func newError(status int, message string, body map[string]any) *Error {
 		kind = KindRateLimit
 	case 503:
 		kind = KindServiceUnavailable
+	}
+	// Some 402 responses share a status but mean different things; the body "error"
+	// slug is authoritative. extension_required means the USSD extension add-on must
+	// be purchased before switching an app to live mode.
+	if slug, ok := body["error"].(string); ok && slug == "extension_required" {
+		kind = KindExtensionRequired
 	}
 	return &Error{Kind: kind, StatusCode: status, Message: message, Body: body}
 }

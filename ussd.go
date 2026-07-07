@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 )
 
@@ -17,22 +16,32 @@ import (
 // Unlike the other client methods (which return map[string]any), the USSD
 // methods decode the "data" payload into typed structs. Non-2xx responses still
 // return a typed *Error: a rented extension that is gone returns KindConflict
-// (409, body error "extension_unavailable"), and a top-up shortfall returns
-// KindInsufficientBalance (402, body error "insufficient_balance").
+// (409, body error "extension_unavailable"), a rent that outruns the dedicated
+// USSD balance returns KindInsufficientBalance (402, body error
+// "insufficient_ussd_balance"), and switching an app to live before the USSD
+// extension add-on is purchased returns KindExtensionRequired (402, body error
+// "extension_required").
 type USSDService struct {
 	client *Client
 }
 
 // ---------------------------------------------------------------- types
 
-// USSDApp is a registered USSD application. Hellio POSTs inbound session events
-// to CallbackURL, signed with Secret (X-Hellio-Signature: HMAC-SHA256 of the raw
-// body). Keep Secret private; it is returned so you can verify signatures.
+// USSDApp is a registered USSD application. Every app has a stable test secret
+// (prefix "ussk_test_") and live secret (prefix "ussk_live_"); Mode ("test" or
+// "live") selects which one Hellio signs callbacks with, and IsLive mirrors it as
+// a bool. New apps start in "test" mode. Hellio POSTs inbound session events to
+// CallbackURL, signed via X-Hellio-Signature (HMAC-SHA256 of the raw body) using
+// the secret for the current mode. Keep both secrets private; they are returned so
+// you can verify signatures.
 type USSDApp struct {
-	ID          int    `json:"id"`
+	ID          string `json:"id"`
 	Name        string `json:"name"`
 	CallbackURL string `json:"callback_url"`
-	Secret      string `json:"secret"`
+	Mode        string `json:"mode"`
+	TestSecret  string `json:"test_secret"`
+	LiveSecret  string `json:"live_secret"`
+	IsLive      bool   `json:"is_live"`
 	Active      bool   `json:"active"`
 	CreatedAt   string `json:"created_at"`
 }
@@ -49,20 +58,20 @@ type USSDAppInput struct {
 // USSDExtension is a rented dial-code extension bound to an app. AppID is nil
 // while the extension is unassigned.
 type USSDExtension struct {
-	ID           int    `json:"id"`
-	Code         string `json:"code"`
-	DialString   string `json:"dial_string"`
-	Length       int    `json:"length"`
-	Status       string `json:"status"`
-	MonthlyPrice string `json:"monthly_price"`
-	AutoRenew    bool   `json:"auto_renew"`
-	AppID        *int   `json:"app_id"`
-	ExpiresAt    string `json:"expires_at"`
+	ID           string  `json:"id"`
+	Code         string  `json:"code"`
+	DialString   string  `json:"dial_string"`
+	Length       int     `json:"length"`
+	Status       string  `json:"status"`
+	MonthlyPrice string  `json:"monthly_price"`
+	AutoRenew    bool    `json:"auto_renew"`
+	AppID        *string `json:"app_id"`
+	ExpiresAt    string  `json:"expires_at"`
 }
 
 // USSDSession is a single USSD dialog. Sandbox is true for simulated sessions.
 type USSDSession struct {
-	ID          int    `json:"id"`
+	ID          string `json:"id"`
 	SessionRef  string `json:"session_ref"`
 	Msisdn      string `json:"msisdn"`
 	ServiceCode string `json:"service_code"`
@@ -104,15 +113,19 @@ type USSDAvailability struct {
 	MonthlyPrice *string `json:"monthly_price"`
 }
 
-// USSDSimulateRequest drives Simulate. Leave SessionID empty and set NewSession
-// true to open a fresh dialog; on later steps pass the SessionID returned by the
-// first call and NewSession false. Input carries the subscriber's latest entry.
+// USSDSimulateRequest drives Simulate. AppID is required and names the app to run
+// the dialog against; the app must be one you own. Leave SessionID empty and set
+// NewSession true to open a fresh dialog; on later steps pass the SessionID
+// returned by the first call and NewSession false. Input carries the subscriber's
+// latest entry. ServiceCode is optional: leave it nil to let the server default it
+// to the shared short code. Simulate always runs in the sandbox (test mode).
 type USSDSimulateRequest struct {
-	SessionID   string `json:"session_id,omitempty"`
-	Msisdn      string `json:"msisdn"`
-	ServiceCode string `json:"service_code"`
-	Input       string `json:"input"`
-	NewSession  bool   `json:"new_session"`
+	AppID       string  `json:"app_id"`
+	SessionID   string  `json:"session_id,omitempty"`
+	Msisdn      string  `json:"msisdn"`
+	Input       string  `json:"input"`
+	NewSession  bool    `json:"new_session"`
+	ServiceCode *string `json:"service_code,omitempty"`
 }
 
 // USSDSimulateResult is the app's reply for one simulated step. Action is
@@ -169,18 +182,41 @@ func (s *USSDService) CreateApp(ctx context.Context, input USSDAppInput) (*USSDA
 
 // UpdateApp updates an existing app. Set input.Active (with a &true / &false) to
 // enable or disable inbound delivery. PUT ussd/apps/{id}.
-func (s *USSDService) UpdateApp(ctx context.Context, id int, input USSDAppInput) (*USSDApp, error) {
+func (s *USSDService) UpdateApp(ctx context.Context, id string, input USSDAppInput) (*USSDApp, error) {
 	var out USSDApp
-	if _, err := s.call(ctx, http.MethodPut, "ussd/apps/"+strconv.Itoa(id), nil, input, &out); err != nil {
+	if _, err := s.call(ctx, http.MethodPut, "ussd/apps/"+id, nil, input, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
 // DeleteApp removes an app. DELETE ussd/apps/{id}.
-func (s *USSDService) DeleteApp(ctx context.Context, id int) error {
-	_, err := s.call(ctx, http.MethodDelete, "ussd/apps/"+strconv.Itoa(id), nil, nil, nil)
+func (s *USSDService) DeleteApp(ctx context.Context, id string) error {
+	_, err := s.call(ctx, http.MethodDelete, "ussd/apps/"+id, nil, nil, nil)
 	return err
+}
+
+// SetMode switches an app between "test" and "live". New apps start in "test".
+// Switching to "live" before the USSD extension add-on is purchased returns
+// KindExtensionRequired (402, body error "extension_required"); use errors.Is
+// against ErrExtensionRequired to detect it. POST ussd/apps/{id}/mode.
+func (s *USSDService) SetMode(ctx context.Context, id, mode string) (*USSDApp, error) {
+	var out USSDApp
+	if _, err := s.call(ctx, http.MethodPost, "ussd/apps/"+id+"/mode", nil, map[string]any{"mode": mode}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RotateSecret rotates the signing secret for the given mode ("test" or "live")
+// and returns the app carrying the new secret. The other mode's secret is left
+// untouched. POST ussd/apps/{id}/rotate-secret.
+func (s *USSDService) RotateSecret(ctx context.Context, id, mode string) (*USSDApp, error) {
+	var out USSDApp
+	if _, err := s.call(ctx, http.MethodPost, "ussd/apps/"+id+"/rotate-secret", nil, map[string]any{"mode": mode}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // ---------------------------------------------------------------- extensions
@@ -193,13 +229,14 @@ func (s *USSDService) Extensions(ctx context.Context, cursor string) (extensions
 }
 
 // RentExtension rents an extension code, optionally binding it to an app (pass
-// appID 0 to leave it unassigned). Returns KindConflict (409,
-// "extension_unavailable") if the code was taken, or KindInsufficientBalance
-// (402, "insufficient_balance") if the account cannot cover the rent.
-// POST ussd/extensions.
-func (s *USSDService) RentExtension(ctx context.Context, code string, appID int) (*USSDExtension, error) {
+// appID "" to leave it unassigned). The rent is drawn from the dedicated USSD
+// balance, which is separate from SMS credit and the main wallet. Returns
+// KindConflict (409, "extension_unavailable") if the code was taken, or
+// KindInsufficientBalance (402, "insufficient_ussd_balance") if the USSD balance
+// cannot cover the rent. POST ussd/extensions.
+func (s *USSDService) RentExtension(ctx context.Context, code, appID string) (*USSDExtension, error) {
 	body := map[string]any{"code": code}
-	if appID != 0 {
+	if appID != "" {
 		body["app_id"] = appID
 	}
 	var out USSDExtension
@@ -210,8 +247,8 @@ func (s *USSDService) RentExtension(ctx context.Context, code string, appID int)
 }
 
 // ReleaseExtension gives up a rented extension. DELETE ussd/extensions/{id}.
-func (s *USSDService) ReleaseExtension(ctx context.Context, id int) error {
-	_, err := s.call(ctx, http.MethodDelete, "ussd/extensions/"+strconv.Itoa(id), nil, nil, nil)
+func (s *USSDService) ReleaseExtension(ctx context.Context, id string) error {
+	_, err := s.call(ctx, http.MethodDelete, "ussd/extensions/"+id, nil, nil, nil)
 	return err
 }
 
@@ -232,9 +269,9 @@ func (s *USSDService) Sessions(ctx context.Context, status, cursor string) (sess
 }
 
 // Session returns a single session by id. GET ussd/sessions/{id}.
-func (s *USSDService) Session(ctx context.Context, id int) (*USSDSession, error) {
+func (s *USSDService) Session(ctx context.Context, id string) (*USSDSession, error) {
 	var out USSDSession
-	if _, err := s.call(ctx, http.MethodGet, "ussd/sessions/"+strconv.Itoa(id), nil, nil, &out); err != nil {
+	if _, err := s.call(ctx, http.MethodGet, "ussd/sessions/"+id, nil, nil, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -243,7 +280,10 @@ func (s *USSDService) Session(ctx context.Context, id int) (*USSDSession, error)
 // ---------------------------------------------------------------- simulate
 
 // Simulate runs one step of a USSD dialog against your app's callback without a
-// real subscriber, so you can test flows end to end. POST ussd/simulate.
+// real subscriber, so you can test flows end to end. req.AppID is required and
+// must name an app you own; an unknown or not-owned app returns KindValidation
+// (422, body error "unknown_app"). Simulate always runs in the sandbox (test
+// mode). POST ussd/simulate.
 func (s *USSDService) Simulate(ctx context.Context, req USSDSimulateRequest) (*USSDSimulateResult, error) {
 	var out USSDSimulateResult
 	if _, err := s.call(ctx, http.MethodPost, "ussd/simulate", nil, req, &out); err != nil {

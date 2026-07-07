@@ -94,11 +94,24 @@ they decode the response `data` into typed structs (`*hellio.USSDApp`,
 `*hellio.USSDExtension`, `*hellio.USSDSession`, `*hellio.USSDPricing`, and so on).
 Access requires a token with the `ussd` ability.
 
-A USSD app owns a callback URL. When a subscriber dials your extension, Hellio
-POSTs the session event to that URL (`sessionId`, `msisdn`, `serviceCode`,
-`input`, `sequence`, `mode`), signed with the header
-`X-Hellio-Signature = HMAC-SHA256(rawBody, app.secret)`; your app replies with a
-`{ message, action }` body where `action` is `"continue"` or `"end"`.
+A USSD app owns a callback URL and has a test/live mode. Every app carries two
+stable signing secrets: a test secret (prefix `ussk_test_`) and a live secret
+(prefix `ussk_live_`). `Mode` (`"test"` or `"live"`, mirrored by the `IsLive`
+bool) selects which one is in force; new apps start in `"test"`. App and extension
+IDs are UUID strings.
+
+When a subscriber dials your extension, Hellio POSTs the session event to your
+callback URL (`sessionId`, `msisdn`, `serviceCode`, `input`, `sequence`, `mode`),
+signed with the header `X-Hellio-Signature = HMAC-SHA256(rawBody, secret)` using
+the secret for the current mode; your app replies with a `{ message, action }`
+body where `action` is `"continue"` or `"end"`.
+
+Extension rent is drawn from a dedicated USSD balance, which is separate from your
+SMS credit and main wallet.
+
+Lifecycle: create an app, simulate dialogs against it by `app_id` (always
+sandbox), rent an extension, then switch the app to live with `SetMode`. Switching
+to live requires the USSD extension add-on; rotate a secret with `RotateSecret`.
 
 ```go
 ctx := context.Background()
@@ -112,13 +125,15 @@ if avail.Available {
 }
 
 // Apps (List / Create / Update / Delete). List is cursor-paginated: pass "" for
-// the first page; nextCursor is "" when there are no more pages.
+// the first page; nextCursor is "" when there are no more pages. New apps start
+// in "test" mode.
 apps, nextCursor, _ := client.USSD.Apps(ctx, "")
 app, _ := client.USSD.CreateApp(ctx, hellio.USSDAppInput{
     Name:        "Bank menu",
     CallbackURL: "https://your-app.com/ussd",
 })
-fmt.Println(app.ID, app.Secret) // keep Secret to verify X-Hellio-Signature
+// Keep the secret for the current mode to verify X-Hellio-Signature.
+fmt.Println(app.ID, app.Mode, app.TestSecret, app.LiveSecret)
 
 active := false
 client.USSD.UpdateApp(ctx, app.ID, hellio.USSDAppInput{
@@ -126,30 +141,42 @@ client.USSD.UpdateApp(ctx, app.ID, hellio.USSDAppInput{
     CallbackURL: "https://your-app.com/ussd",
     Active:      &active, // pause inbound delivery
 })
-client.USSD.DeleteApp(ctx, app.ID)
 
-// Extensions (List / Rent / Release). Pass appID 0 to rent unassigned.
+// Simulate a dialog against your app by app_id, without a real subscriber. Always
+// runs in the sandbox (test mode). ServiceCode is optional: leave it nil to let
+// the server default it to the shared short code.
+res, _ := client.USSD.Simulate(ctx, hellio.USSDSimulateRequest{
+    AppID:      app.ID,
+    Msisdn:     "233241234567",
+    NewSession: true,
+})
+fmt.Println(res.Message, res.Action) // action: "continue" or "end"
+
+// Extensions (List / Rent / Release). Pass appID "" to rent unassigned. Rent is
+// billed to the dedicated USSD balance.
 exts, _, _ := client.USSD.Extensions(ctx, "")
 ext, err := client.USSD.RentExtension(ctx, "100", app.ID)
 if err != nil {
     switch {
     case errors.Is(err, hellio.ErrConflict):           // 409 extension_unavailable
-    case errors.Is(err, hellio.ErrInsufficientBalance): // 402 insufficient_balance
+    case errors.Is(err, hellio.ErrInsufficientBalance): // 402 insufficient_ussd_balance
     }
 }
+
+// Go live once the extension add-on is purchased, and rotate secrets as needed.
+live, err := client.USSD.SetMode(ctx, app.ID, "live")
+if errors.Is(err, hellio.ErrExtensionRequired) {       // 402 extension_required
+    // Purchase the USSD extension add-on before going live.
+}
+_ = live
+client.USSD.RotateSecret(ctx, app.ID, "test") // returns the app with the new secret
 client.USSD.ReleaseExtension(ctx, ext.ID)
+client.USSD.DeleteApp(ctx, app.ID)
 
 // Sessions (List / Get). Filter by status ("" for all) and paginate with cursor.
 sessions, _, _ := client.USSD.Sessions(ctx, "ended", "")
 session, _ := client.USSD.Session(ctx, sessions[0].ID)
-
-// Simulate a dialog against your callback without a real subscriber.
-res, _ := client.USSD.Simulate(ctx, hellio.USSDSimulateRequest{
-    Msisdn:      "233241234567",
-    ServiceCode: "*713*100#",
-    NewSession:  true,
-})
-fmt.Println(res.Message, res.Action) // action: "continue" or "end"
+_ = session
 ```
 
 ### Reading a response
@@ -178,6 +205,7 @@ sentinel:
 |---|---|---|
 | `hellio.ErrInvalidApiToken` | `KindInvalidApiToken` | 401 |
 | `hellio.ErrInsufficientBalance` | `KindInsufficientBalance` | 402 |
+| `hellio.ErrExtensionRequired` | `KindExtensionRequired` | 402 (USSD `extension_required`) |
 | `hellio.ErrConflict` | `KindConflict` | 409 |
 | `hellio.ErrValidation` | `KindValidation` | 422 |
 | `hellio.ErrRateLimit` | `KindRateLimit` | 429 |
